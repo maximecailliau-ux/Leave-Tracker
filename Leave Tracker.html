@@ -107,6 +107,11 @@
   .field input:focus,.field select:focus,.field textarea:focus{outline:2px solid #BFD9EC; outline-offset:0; border-color:var(--blue);}
   .field select:disabled,.field input:disabled{background:#F2F2F2; color:var(--ink-soft); cursor:not-allowed;}
   .field .hint{font-size:11.5px; color:var(--ink-faint); margin-top:4px;}
+  .balance-box{
+    margin-top:8px; padding:9px 11px; border-radius:var(--radius-sm); font-size:12.5px;
+    background:#EAF2FA; border:1px solid #CFE1F0; color:var(--navy-deep); line-height:1.5;
+  }
+  .balance-box b{font-weight:700;}
   .g-signin-holder{margin-top:6px;}
 
   /* ---------- Toast / banner ---------- */
@@ -232,6 +237,7 @@
           <div class="field">
             <label for="reqType">Leave type</label>
             <select id="reqType" required></select>
+            <div class="balance-box" id="balanceBox" style="display:none;"></div>
           </div>
           <div class="field">
             <label for="reqStart">Start date</label>
@@ -240,6 +246,10 @@
           <div class="field">
             <label for="reqEnd">End date</label>
             <input type="date" id="reqEnd" required>
+          </div>
+          <div class="field full" style="display:flex; align-items:center; gap:8px; flex-direction:row;">
+            <input type="checkbox" id="reqHalfDay" style="width:auto;">
+            <label for="reqHalfDay" style="margin:0;">Half day only (0.5 day \u2014 start and end date must match)</label>
           </div>
           <div class="field full">
             <label for="reqReason">Reason / notes (optional)</label>
@@ -326,6 +336,8 @@
 //            to leave visible in this file)
 const SHEET_ID = '14ZMiV-het2DGyFqPDCg0SjXUYasZJihSVeJsu1cAMuo';
 const CLIENT_ID = '655778215415-ttabqhlcbhbj01fl20che1ougubs508c.apps.googleusercontent.com';
+// Shown inside notification emails as a link back to the app. Update if you move hosting.
+const APP_URL = 'https://maximecailliau-ux.github.io/Leave-Tracker/Leave%20Tracker.html';
 const CFG = { sheetId: SHEET_ID, clientId: CLIENT_ID };
 
 // Sheet layout \u2014 must match the LeaveTracker.xlsx structure
@@ -334,7 +346,7 @@ const RNG = {
   approvers:   "Config!A15:A17",       // name only \u2014 must match an Employees name exactly
   employees:   "Config!A132:E181",
   employeesFull: { sheet: "Config", firstRow: 132, lastRow: 181 },
-  log:         "'Leave Tracker Activities'!A6:L105",
+  log:         "'Leave Tracker Activities'!A6:M105",
   logRange:    { sheet: "Leave Tracker Activities", firstRow: 6, lastRow: 105 },
   balances:    "'Leave Tracker Activities'!A113:R163",
 };
@@ -372,7 +384,7 @@ function initGSI(){
   }
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CFG.clientId,
-    scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+    scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/gmail.send',
     callback: async (resp) => {
       if (resp.error) { showToast('Sign-in failed: ' + resp.error, true); return; }
       accessToken = resp.access_token;
@@ -456,6 +468,93 @@ async function firstBlankRow(sheet, col, firstRow, lastRow){
 }
 
 /* =====================================================================
+   EMAIL (sent via the signed-in person's own Gmail, using the gmail.send
+   scope granted at sign-in \u2014 no separate mail service needed). Every
+   send is best-effort: a failure here never blocks the underlying leave
+   action, it's just logged to the console.
+   ===================================================================== */
+function buildMimeMessage({to, cc, subject, body}){
+  const lines = [
+    `To: ${to}`,
+    cc ? `Cc: ${cc}` : null,
+    `Subject: ${subject}`,
+    'Content-Type: text/plain; charset=UTF-8',
+    '',
+    body,
+  ].filter(x => x !== null);
+  const raw = lines.join('\r\n');
+  const b64 = btoa(unescape(encodeURIComponent(raw)));
+  return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function gmailSend({to, cc, subject, body}){
+  if (!to) return;
+  try{
+    const raw = buildMimeMessage({to, cc, subject, body});
+    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method:'POST',
+      headers:{ Authorization:'Bearer ' + accessToken, 'Content-Type':'application/json' },
+      body: JSON.stringify({ raw }),
+    });
+    if (!res.ok){ console.error('Gmail send failed:', res.status, await res.text()); }
+  }catch(e){ console.error('Gmail send error:', e); }
+}
+function getEmployeeEmail(name){
+  const e = DATA.employees.find(x => x.name === name);
+  return e ? e.email : '';
+}
+function getApproverEmails(){
+  return DATA.approvers.map(name => getEmployeeEmail(name)).filter(Boolean);
+}
+// Approved requests for the same employee whose dates overlap [start,end], excluding excludeRow.
+function findOverlaps(employee, start, end, excludeRow){
+  return DATA.log.filter(r => r.employee===employee && r.status==='Approved' && r.row!==excludeRow
+                              && r.start && r.end && r.start<=end && r.end>=start);
+}
+
+async function sendSubmissionEmails({employee, type, start, end, reason, halfDay, row}){
+  const dateRange = (start === end) ? fmtDate(start) : `${fmtDate(start)} to ${fmtDate(end)}`;
+  const whenText = halfDay ? `${dateRange}, half day` : dateRange;
+  const requestorEmail = getEmployeeEmail(employee);
+
+  await gmailSend({
+    to: requestorEmail,
+    subject: `Leave request submitted: ${type}`,
+    body: `Hi ${employee},\n\nYour request for ${type} (${whenText}) has been submitted and is pending approval.`
+        + (reason ? `\n\nNotes you left: ${reason}` : '')
+        + `\n\nCheck its status any time in the Leave Tracker app: ${APP_URL}`,
+  });
+
+  const approverEmails = getApproverEmails();
+  const overlaps = findOverlaps(employee, start, end, row);
+  const overlapLines = overlaps.length
+    ? '\n\nHeads up \u2014 this overlaps with ' + employee + '\u2019s already-approved leave:\n'
+      + overlaps.map(o => `  \u2022 ${o.type}, ${fmtDate(o.start)} to ${fmtDate(o.end)}`).join('\n')
+    : '';
+
+  await gmailSend({
+    to: approverEmails.join(','),
+    subject: `New leave request: ${employee} (${type})`,
+    body: `${employee} has requested ${type} \u2014 ${whenText}.`
+        + (reason ? `\n\nNotes from ${employee}: ${reason}` : '')
+        + overlapLines
+        + `\n\nReview and approve or reject it here: ${APP_URL}`,
+  });
+}
+
+async function sendApprovalEmail({employee, type, start, end, reason, approverName}){
+  const requestorEmail = getEmployeeEmail(employee);
+  const approverEmails = getApproverEmails();
+  const notesLine = reason ? `\n\nNotes on the request: ${reason}` : '';
+  await gmailSend({
+    to: requestorEmail,
+    cc: approverEmails.join(','),
+    subject: `Leave request approved: ${type}`,
+    body: `Hi ${employee},\n\nYour request for ${type} (${fmtDate(start)} to ${fmtDate(end)}) has been `
+        + `approved by ${approverName}.${notesLine}`,
+  });
+}
+
+/* =====================================================================
    DATA (in-memory cache, refreshed on Sync)
    ===================================================================== */
 let DATA = { leaveTypes:[], approvers:[], employees:[], log:[], balances:{header:[], rows:[]} };
@@ -477,7 +576,7 @@ async function loadEverything(){
     DATA.log = log.map((r,i)=>({ row:6+i, id:r[0]||'', employee:r[1]||'', type:r[2]||'',
                                   start:serialToISO(r[3]), end:serialToISO(r[4]), days:r[5]||'', reason:r[6]||'',
                                   status:r[7]||'', requested:serialToISO(r[8]), approver:r[9]||'',
-                                  decided:serialToISO(r[10]), notes:r[11]||'' }))
+                                  decided:serialToISO(r[10]), notes:r[11]||'', halfDay:r[12]||'No' }))
                        .filter(r=>r.employee);
     DATA.balances = { header: bal[0]||[], rows: bal.slice(1).filter(r=>r[0]) };
 
@@ -503,6 +602,7 @@ function renderAll(){
   populateEmployeeSelects();
   populateTypeSelect();
   renderMyRequests();
+  updateBalanceBox();
   renderTimeline();
   renderBalances();
   if (isAdmin){ renderPending(); renderEmployeesAdmin(); }
@@ -571,6 +671,38 @@ function populateTypeSelect(){
     DATA.leaveTypes.map(t=>`<option value="${t}">${t}</option>`).join('');
 }
 
+function findBalanceCols(type){
+  const header = DATA.balances.header;
+  const availIdx = header.findIndex(h => h === type + ' Available');
+  const pendIdx = header.findIndex(h => h === type + ' Pending');
+  const ytdIdx = header.findIndex(h => h === type + ' Taken (YTD)');
+  return { availIdx, pendIdx, ytdIdx };
+}
+function updateBalanceBox(){
+  const box = document.getElementById('balanceBox');
+  const employee = document.getElementById('reqEmployee').value;
+  const type = document.getElementById('reqType').value;
+  if (!employee || !type){ box.style.display = 'none'; return; }
+  const row = DATA.balances.rows.find(r => r[0] === employee);
+  if (!row){ box.style.display = 'none'; return; }
+  const { availIdx, pendIdx, ytdIdx } = findBalanceCols(type);
+  if (availIdx > -1){
+    const avail = Number(row[availIdx]) || 0;
+    const pend = pendIdx > -1 ? (Number(row[pendIdx]) || 0) : 0;
+    const net = Math.round((avail - pend) * 10) / 10;
+    box.innerHTML = `<b>${employee}'s ${type} balance:</b> ${avail} days available`
+      + (pend > 0 ? `, ${pend} already pending in other requests \u2014 <b>${net} effectively available</b>.` : '.');
+  } else if (ytdIdx > -1){
+    const ytd = Number(row[ytdIdx]) || 0;
+    box.innerHTML = `<b>${type}</b> isn't tracked as a running balance \u2014 ${employee} has used `
+      + `${ytd} day(s) so far this calendar year.`;
+  } else {
+    box.style.display = 'none'; return;
+  }
+  box.style.display = 'block';
+}
+document.getElementById('reqType').addEventListener('change', updateBalanceBox);
+
 /* =====================================================================
    VIEW: Submit request
    ===================================================================== */
@@ -584,22 +716,43 @@ document.getElementById('requestForm').addEventListener('submit', async (e)=>{
     const start = document.getElementById('reqStart').value;
     const end = document.getElementById('reqEnd').value;
     const reason = document.getElementById('reqReason').value;
+    const halfDay = document.getElementById('reqHalfDay').checked;
     if (!employee || !type || !start || !end) throw new Error('Please fill in all required fields.');
     if (end < start) throw new Error('End date is before the start date.');
     if (!isAdmin && employee !== myEmployeeName) throw new Error('You can only submit requests for yourself.');
+    if (halfDay && start !== end) throw new Error('Half day only applies when start and end date are the same.');
 
     const row = await firstBlankRow(RNG.logRange.sheet, 'B', RNG.logRange.firstRow, RNG.logRange.lastRow);
     await apiBatchUpdate([
       { range: `'Leave Tracker Activities'!B${row}:E${row}`, values: [[employee, type, start, end]] },
       { range: `'Leave Tracker Activities'!G${row}:I${row}`, values: [[reason, 'Pending', todayISO()]] },
+      { range: `'Leave Tracker Activities'!M${row}`, values: [[halfDay ? 'Yes' : 'No']] },
     ]);
     document.getElementById('requestForm').reset();
     showToast('Request submitted \u2014 pending approval', false, true);
+    const days = halfDay ? 0.5 : null; // exact day count recalculated after reload; email uses a best-effort figure
+    sendSubmissionEmails({ employee, type, start, end, reason, halfDay, row }).catch(err=>console.error('Email send failed', err));
     await loadEverything();
   }catch(err){
     showToast(err.message, true);
   }finally{
     btn.disabled = false; btn.textContent = 'Submit request';
+  }
+});
+
+document.getElementById('reqHalfDay').addEventListener('change', (e)=>{
+  const endField = document.getElementById('reqEnd');
+  if (e.target.checked){
+    const start = document.getElementById('reqStart').value;
+    if (start) endField.value = start;
+    endField.disabled = true;
+  } else {
+    endField.disabled = false;
+  }
+});
+document.getElementById('reqStart').addEventListener('change', (e)=>{
+  if (document.getElementById('reqHalfDay').checked){
+    document.getElementById('reqEnd').value = e.target.value;
   }
 });
 
@@ -618,7 +771,7 @@ function renderMyRequests(){
       <td>${r.reason||''}</td>
     </tr>`).join('') + `</tbody></table>`;
 }
-document.getElementById('reqEmployee').addEventListener('change', renderMyRequests);
+document.getElementById('reqEmployee').addEventListener('change', ()=>{ renderMyRequests(); updateBalanceBox(); });
 
 /* =====================================================================
    VIEW: Team Timeline (rendered client-side from raw log data)
@@ -761,11 +914,17 @@ function renderPending(){
 }
 async function decideRequest(row, decision){
   try{
+    const original = DATA.log.find(r => r.row === row); // capture details before reload overwrites DATA.log
     await apiBatchUpdate([
       { range: `'Leave Tracker Activities'!H${row}`, values: [[decision]] },
       { range: `'Leave Tracker Activities'!J${row}:K${row}`, values: [[me.name, todayISO()]] },
     ]);
     showToast('Request ' + decision.toLowerCase(), false, true);
+    if (decision === 'Approved' && original){
+      sendApprovalEmail({ employee: original.employee, type: original.type, start: original.start,
+                           end: original.end, reason: original.reason, approverName: me.name })
+        .catch(err => console.error('Approval email failed', err));
+    }
     await loadEverything();
   }catch(e){ showToast(e.message, true); }
 }

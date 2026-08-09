@@ -154,7 +154,7 @@
   /* ---------- Timeline (Gantt) ---------- */
   #timelineControls{display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;}
   .gantt-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius);}
-  .gantt{border-collapse:collapse; min-width:100%; table-layout:fixed;}
+  .gantt{border-collapse:collapse; min-width:100%;}
   .gantt th, .gantt td{border:1px solid #EEF1F3; padding:0;}
   .gantt th.emp-col, .gantt td.emp-col{
     position:sticky; left:0; background:#fff; z-index:2; text-align:left; padding:7px 10px;
@@ -167,7 +167,7 @@
   .gantt th.day-head.weekend{background:#E4E9ED;}
   .gantt th.day-head.today{background:var(--red); color:#fff;}
   .gantt td.daycell{width:22px; min-width:22px; height:26px; text-align:center; font-size:8px; font-weight:700; color:#fff;}
-  .gantt .today-line{box-shadow: inset 2px 0 0 var(--red), inset -2px 0 0 var(--red);}
+  .gantt .today-empty{background:#FCE4D6;}
   .gantt td.daycell.weekend-empty{background:#F5F7F8;}
   .legend{display:flex; flex-wrap:wrap; gap:14px; margin-top:14px; font-size:12px; color:var(--ink-soft);}
   .legend .item{display:flex; align-items:center; gap:6px;}
@@ -1029,7 +1029,16 @@ function monthLabel(d){ return d.toLocaleDateString('en-AU',{month:'long',year:'
 function startOfMonth(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
 function addMonths(d,n){ return new Date(d.getFullYear(), d.getMonth()+n, 1); }
 function daysInMonth(d){ return new Date(d.getFullYear(), d.getMonth()+1, 0).getDate(); }
-function isoDate(d){ return d.toISOString().slice(0,10); }
+// Formats an already-local Date object's own calendar fields directly (no UTC conversion) --
+// using toISOString() here was a real, higher-impact bug than just the "today" marker: it
+// silently shifted every single grid day back by one for any AEST-local browser (which is the
+// normal case for this app's users), throwing off which day each leave request appeared under.
+function isoDate(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 function initTimelineControls(){
   const from = startOfMonth(nowAEST());
@@ -1087,12 +1096,13 @@ function renderTimeline(){
       const match = DATA.log.find(r => r.employee===emp.name && r.start<=col.iso && r.end>=col.iso
                                         && (r.status==='Approved'||r.status==='Pending')
                                         && r.type !== 'Family & Domestic Violence Leave');
-      const todayCls = col.isToday ? ' today-line' : '';
       if (match){
         const bg = match.status==='Approved' ? STATUS_COLORS.accepted : STATUS_COLORS.submitted;
-        html += `<td class="daycell${todayCls}" style="background:${bg};" title="${emp.name} \u2014 ${match.type} (${match.status})"></td>`;
+        html += `<td class="daycell" style="background:${bg};" title="${emp.name} \u2014 ${match.type} (${match.status})"></td>`;
       } else {
-        html += `<td class="daycell${todayCls}${col.weekend?' weekend-empty':''}"></td>`;
+        // today gets a soft tint (same idea as the weekend tint) only on empty cells, so it
+        // never competes with or muddies an actual leave-status colour
+        html += `<td class="daycell${col.isToday?' today-empty':(col.weekend?' weekend-empty':'')}"></td>`;
       }
     });
     html += '</tr>';

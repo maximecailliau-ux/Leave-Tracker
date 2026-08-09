@@ -39,7 +39,7 @@
     display:flex; align-items:center; justify-content:space-between; gap:16px;
     flex-wrap:wrap;
   }
-  .brand{display:flex; align-items:baseline; gap:10px;}
+  .brand{display:flex; align-items:center; gap:10px;}
   .brand h1{font-size:18px; font-weight:700; margin:0; letter-spacing:-.2px;}
   .brand .sub{font-size:12px; color:#B9CBD3;}
   .who{display:flex; align-items:center; gap:10px; font-size:13px;}
@@ -193,6 +193,8 @@
 
 <div id="setup">
   <div class="box">
+    <img src="https://www.astutefinancial.com.au/wp-content/themes/astutefinancial/assets/build/images/logo.png"
+         alt="Astute" style="height:32px; margin-bottom:14px;" onerror="this.style.display='none'">
     <h1>Leave Tracker</h1>
     <p>Sign in with your work Google account to submit or approve leave, and to see the team's
        timeline and balances.</p>
@@ -204,6 +206,8 @@
 <div id="app">
   <header class="topbar">
     <div class="brand">
+      <img src="https://www.astutefinancial.com.au/wp-content/themes/astutefinancial/assets/build/images/logo.png"
+           alt="Astute" style="height:24px; filter:brightness(0) invert(1);" onerror="this.style.display='none'">
       <h1>Leave Tracker</h1>
       <span class="sub" id="sheetLabel"></span>
     </div>
@@ -214,6 +218,7 @@
       <button class="btn btn-ghost btn-sm" id="signOutBtn">Sign out</button>
     </div>
   </header>
+
 
   <nav class="tabs">
     <button data-view="submit" class="active">Submit Request</button>
@@ -320,12 +325,10 @@
       </div>
 
       <div class="card" style="margin-top:16px;">
-        <div class="subhead">Current balances</div>
-        <p class="hint" style="margin:-4px 0 10px;">Set each person's real balance when you go
-          live, or make a manual correction any time — saving always records today's date
-          automatically, so nothing ever gets double-counted. The "as of" date only updates when
-          you hit Save on that row — it won't move on its own, so don't worry if it looks old for
-          someone nobody's corrected yet. Excluded employees aren't shown here.</p>
+        <div class="subhead">Current balances <span class="hint" style="margin:0; font-weight:400;">(as of <span id="balancesAdminAsOf"></span>)</span></div>
+        <p class="hint" style="margin:-4px 0 10px;">The live balance for each person, right now —
+          change a number and hit Save to correct it (e.g. crediting someone an extra day).
+          Excluded employees aren't shown here.</p>
         <div id="balancesAdminTable"><div class="loading">Loading…</div></div>
       </div>
 
@@ -610,11 +613,15 @@ let DATA = { leaveTypes:[], approvers:[], employees:[], log:[], balances:{header
 async function loadEverything(){
   showToast('Syncing\u2026');
   try{
-    const [lp, ap, emp, log, bal] = await Promise.all([
+    const phRange = `Config!A${RNG.publicHolidays.firstRow}:C${RNG.publicHolidays.lastRow}`;
+    const [lp, ap, emp, log, bal, ph] = await Promise.all([
       apiGet(RNG.leavePolicy), apiGet(RNG.approvers), apiGet(RNG.employees),
-      apiGet(RNG.log), apiGet(RNG.balances),
+      apiGet(RNG.log), apiGet(RNG.balances), apiGet(phRange),
     ]);
     DATA.leaveTypes = lp.filter(r=>r[0]).map(r=>r[0]);
+    // name -> days/year rate, for projecting a balance forward to a future date client-side
+    DATA.leaveTypeRates = {};
+    lp.filter(r=>r[0]).forEach(r => { DATA.leaveTypeRates[r[0]] = Number(r[1]) || 0; });
     DATA.approvers = ap.filter(r=>r[0]).map(r=>(r[0]||'').trim());
     // employees: [name,email,state,included,startDate], keep sheet row number for writes
     DATA.employees = emp.map((r,i)=>({ row:RNG.employeesFull.firstRow+i, name:r[0]||'', email:(r[1]||'').toLowerCase(),
@@ -626,6 +633,9 @@ async function loadEverything(){
                                   status:r[7]||'', requested:serialToISO(r[8]), approver:r[9]||'',
                                   decided:serialToISO(r[10]), notes:r[11]||'', halfDay:r[12]||'No' }))
                        .filter(r=>r.employee);
+    // date, name, state (or "All states") \u2014 used for business-day-aware date maths client-side
+    DATA.publicHolidays = ph.filter(r=>r[0]).map(r=>({ date: typeof r[0]==='number' ? serialToISO(r[0]) : r[0],
+                                                        name: r[1]||'', state: r[2]||'' }));
     // Header cells in the sheet wrap onto multiple lines (e.g. "Annual Leave\nAvailable") for
     // readability there; normalise to single spaces here so every lookup below can just match
     // plain "Annual Leave Available" without needing to know or care about the real formatting.
@@ -681,6 +691,85 @@ function fmtDate(iso){
   return `${dd}/${mm}/${yyyy}`;
 }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
+// True only when every single day in [startISO, endISO] falls on a Saturday or Sunday \u2014
+// i.e. the request wouldn't cover any actual working day at all.
+function isAllWeekend(startISO, endISO){
+  const d = new Date(startISO + 'T00:00:00');
+  const last = new Date(endISO + 'T00:00:00');
+  while (d <= last){
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) return false; // found a weekday
+    d.setDate(d.getDate() + 1);
+  }
+  return true;
+}
+function isBusinessDay(dateISO, state){
+  const d = new Date(dateISO + 'T00:00:00');
+  const dow = d.getDay();
+  if (dow === 0 || dow === 6) return false;
+  return !DATA.publicHolidays.some(h => h.date === dateISO && (h.state === state || h.state === 'All states'));
+}
+// Whole business days in [startISO, endISO] inclusive, for the given state \u2014 mirrors the
+// sheet's own NETWORKDAYS-minus-holidays formula, computed client-side.
+function countBusinessDays(startISO, endISO, state){
+  let count = 0;
+  const d = new Date(startISO + 'T00:00:00');
+  const last = new Date(endISO + 'T00:00:00');
+  while (d <= last){
+    if (isBusinessDay(isoOf(d), state)) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
+function isoOf(d){ return d.toISOString().slice(0,10); }
+// The date of the Nth business day starting from (and including) startISO, for the given state.
+function dateOfNthBusinessDay(startISO, n, state){
+  let count = 0;
+  const d = new Date(startISO + 'T00:00:00');
+  let result = startISO;
+  while (count < n){
+    const iso = isoOf(d);
+    if (isBusinessDay(iso, state)){ count++; result = iso; }
+    if (count < n) d.setDate(d.getDate() + 1);
+  }
+  return result;
+}
+function nextCalendarDay(iso){
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + 1);
+  return isoOf(d);
+}
+// A small modal offering two ways to handle a request that exceeds the available balance.
+// Resolves to 'split', 'shorten', or 'cancel'.
+function askSplitOrShorten({ type, requestedDays, availableDays, shortenEndDate, splitEndDate }){
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(20,30,40,.45);z-index:1000;'
+      + 'display:flex;align-items:center;justify-content:center;padding:20px;';
+    overlay.innerHTML = `
+      <div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,.3);">
+        <h3 style="margin:0 0 10px;font-size:16px;color:var(--navy-deep);">Not quite enough ${type} balance</h3>
+        <p style="margin:0 0 18px;font-size:13.5px;color:var(--ink-soft);line-height:1.5;">
+          This request needs ${requestedDays} day(s), but only ${availableDays} day(s) is projected to be
+          available by the start date. How would you like to handle the rest?
+        </p>
+        <button id="modalSplitBtn" class="btn btn-primary" style="width:100%;justify-content:center;margin-bottom:8px;padding:10px;">
+          Cover the rest with Unpaid Leave (through ${fmtDate(splitEndDate)})
+        </button>
+        <button id="modalShortenBtn" class="btn btn-outline" style="width:100%;justify-content:center;margin-bottom:8px;padding:10px;">
+          Shorten to fit \u2014 end on ${fmtDate(shortenEndDate)} instead
+        </button>
+        <button id="modalCancelBtn" class="btn btn-ghost" style="width:100%;justify-content:center;padding:10px;color:var(--ink-soft);background:#F2F2F2;">
+          Cancel, I'll change it myself
+        </button>
+      </div>`;
+    document.body.appendChild(overlay);
+    const cleanup = (choice) => { document.body.removeChild(overlay); resolve(choice); };
+    overlay.querySelector('#modalSplitBtn').addEventListener('click', () => cleanup('split'));
+    overlay.querySelector('#modalShortenBtn').addEventListener('click', () => cleanup('shorten'));
+    overlay.querySelector('#modalCancelBtn').addEventListener('click', () => cleanup('cancel'));
+  });
+}
 
 function populateEmployeeSelects(){
   const active = DATA.employees.filter(e=>e.included!=='Exclude');
@@ -730,45 +819,73 @@ function findBalanceCols(type){
   const ytdIdx = header.findIndex(h => h === type + ' Taken (YTD)');
   return { availIdx, pendIdx, ytdIdx };
 }
-function buildBalanceMessage(employee, type){
+function buildBalanceMessage(employee, type, targetDateISO){
   if (!employee || !type) return null;
   const row = DATA.balances.rows.find(r => r[0] === employee);
   if (!row) return `Balance info isn't available yet for ${employee} \u2014 try hitting Sync, or check `
                   + `they're listed correctly on the Config tab.`;
   const { availIdx, pendIdx, ytdIdx } = findBalanceCols(type);
-  const r2 = n => Math.round(n * 100) / 100;
   if (availIdx > -1){
-    const avail = r2(Number(row[availIdx]) || 0);
-    const pend = pendIdx > -1 ? r2(Number(row[pendIdx]) || 0) : 0;
-    const net = r2(avail - pend);
-    return `${employee}'s ${type} balance: ${avail} days available`
-      + (pend > 0 ? `, ${pend} already pending in other requests \u2014 ${net} effectively available.` : '.');
+    const availNum = Number(row[availIdx]) || 0;
+    const pendNum = pendIdx > -1 ? (Number(row[pendIdx]) || 0) : 0;
+    // Project the current balance forward to the request's own start date, using that leave
+    // type's accrual rate \u2014 answers "will I have enough BY THEN", not "do I have enough today".
+    let projectedNum = availNum;
+    let whenLabel = 'balance';
+    if (targetDateISO){
+      projectedNum = projectBalance(employee, type, targetDateISO);
+      whenLabel = `projected balance by ${fmtDate(targetDateISO)}`;
+    }
+    const avail = fmtBalanceNum(projectedNum);
+    const pend = fmtBalanceNum(pendNum);
+    const net = fmtBalanceNum(projectedNum - pendNum);
+    return `${employee}'s ${type} ${whenLabel}: ${avail} days available`
+      + (pendNum > 0 ? `, ${pend} already pending in other requests \u2014 ${net} effectively available.` : '.');
   }
   if (ytdIdx > -1){
-    const ytd = r2(Number(row[ytdIdx]) || 0);
+    const ytd = fmtBalanceNum(Number(row[ytdIdx]) || 0);
     return `${type} isn't tracked as a running balance \u2014 ${employee} has used ${ytd} day(s) `
          + `so far this calendar year.`;
   }
   return null;
 }
+// Numeric-only version of the same projection, reused by the insufficient-balance check below.
+// Returns null if this isn't a balance-tracked type or there's no data for this employee yet.
+function projectBalance(employee, type, targetDateISO){
+  const row = DATA.balances.rows.find(r => r[0] === employee);
+  if (!row) return null;
+  const { availIdx } = findBalanceCols(type);
+  if (availIdx === -1) return null;
+  const availNum = Number(row[availIdx]) || 0;
+  const rate = DATA.leaveTypeRates[type] || 0;
+  const daysAhead = Math.max(0, Math.round((new Date(targetDateISO) - new Date(todayISO())) / 86400000));
+  return availNum + rate * daysAhead / 365;
+}
 function updateBalanceBox(){
   const box = document.getElementById('balanceBox');
   const employee = document.getElementById('reqEmployee').value;
   const type = document.getElementById('reqType').value;
-  const msg = buildBalanceMessage(employee, type);
+  const start = document.getElementById('reqStart').value;
+  if (!start){ box.style.display = 'none'; return; } // postponed until a start date is entered
+  const msg = buildBalanceMessage(employee, type, start);
   if (!msg){ box.style.display = 'none'; return; }
   box.innerHTML = msg.replace(/^([^:]+:)/, '<b>$1</b>'); // bold the leading "who/what" label, if present
   box.style.display = 'block';
 }
-document.getElementById('reqType').addEventListener('change', ()=>{
+function maybeShowBalanceToast(){
   updateBalanceBox();
   // A visible "pop" moment as well as the persistent box above, since a quiet inline box
-  // alone is easy to miss.
+  // alone is easy to miss. Postponed until both a type AND a start date are set \u2014 otherwise
+  // there's no target date to project the balance forward to.
   const employee = document.getElementById('reqEmployee').value;
   const type = document.getElementById('reqType').value;
-  const msg = buildBalanceMessage(employee, type);
+  const start = document.getElementById('reqStart').value;
+  if (!type || !start) return;
+  const msg = buildBalanceMessage(employee, type, start);
   if (msg) showToast(msg, false, true, 6000);
-});
+}
+document.getElementById('reqType').addEventListener('change', maybeShowBalanceToast);
+document.getElementById('reqStart').addEventListener('change', maybeShowBalanceToast);
 
 /* =====================================================================
    VIEW: Submit request
@@ -780,21 +897,67 @@ document.getElementById('requestForm').addEventListener('submit', async (e)=>{
   try{
     const employee = document.getElementById('reqEmployee').value;
     const type = document.getElementById('reqType').value;
-    const start = document.getElementById('reqStart').value;
-    const end = document.getElementById('reqEnd').value;
+    let start = document.getElementById('reqStart').value;
+    let end = document.getElementById('reqEnd').value;
     const reason = document.getElementById('reqReason').value;
     const halfDay = document.getElementById('reqHalfDay').checked;
     if (!employee || !type || !start || !end) throw new Error('Please fill in all required fields.');
     if (end < start) throw new Error('End date is before the start date.');
     if (!isAdmin && employee !== myEmployeeName) throw new Error('You can only submit requests for yourself.');
     if (halfDay && start !== end) throw new Error('Half day only applies when start and end date are the same.');
+    if (isAllWeekend(start, end)) throw new Error('That request doesn\u2019t cover any working days '
+      + '(only weekend days selected) \u2014 nothing to submit.');
 
-    const row = await firstBlankRow(RNG.logRange.sheet, 'B', RNG.logRange.firstRow, RNG.logRange.lastRow);
-    await apiBatchUpdate([
-      { range: `'Leave Tracker Activities'!B${row}:E${row}`, values: [[employee, type, start, end]] },
-      { range: `'Leave Tracker Activities'!G${row}:I${row}`, values: [[reason, 'Pending', todayISO()]] },
-      { range: `'Leave Tracker Activities'!M${row}`, values: [[halfDay ? 'Yes' : 'No']] },
-    ]);
+    // Annual Leave specifically: if the request would exceed what's projected to be available
+    // by the start date, offer to either cover the shortfall as Unpaid Leave or shorten the
+    // request to fit, rather than just rejecting it outright.
+    let splitUnpaid = null; // {start, end} if the person chooses to split
+    if (type === 'Annual Leave'){
+      const emp = DATA.employees.find(x => x.name === employee);
+      const state = emp ? emp.state : 'NSW';
+      const requestedDays = halfDay ? 0.5 : countBusinessDays(start, end, state);
+      const projectedAvail = projectBalance(employee, type, start);
+      if (projectedAvail !== null && requestedDays > projectedAvail + 0.001){
+        const wholeDaysAvail = Math.floor(projectedAvail);
+        const shortenEndDate = wholeDaysAvail > 0 ? dateOfNthBusinessDay(start, wholeDaysAvail, state) : null;
+        const choice = await askSplitOrShorten({
+          type, requestedDays: fmtBalanceNum(requestedDays), availableDays: fmtBalanceNum(projectedAvail),
+          shortenEndDate, splitEndDate: end,
+        });
+        if (choice === 'cancel'){ btn.disabled = false; btn.textContent = 'Submit request'; return; }
+        if (choice === 'shorten'){
+          if (!shortenEndDate) throw new Error('There isn\u2019t a whole day of balance available yet, so this can\u2019t be shortened to fit \u2014 try Unpaid Leave instead, or pick a later start date.');
+          end = shortenEndDate;
+        } else if (choice === 'split'){
+          if (wholeDaysAvail > 0){
+            splitUnpaid = { start: nextCalendarDay(shortenEndDate), end };
+            end = shortenEndDate;
+          } else {
+            // Nothing at all available \u2014 the whole thing becomes Unpaid Leave.
+            splitUnpaid = { start, end };
+            end = null; // signals "skip the Annual Leave row entirely" below
+          }
+        }
+      }
+    }
+
+    let annualRow = null, unpaidRow = null;
+    if (end){
+      annualRow = await firstBlankRow(RNG.logRange.sheet, 'B', RNG.logRange.firstRow, RNG.logRange.lastRow);
+      await apiBatchUpdate([
+        { range: `'Leave Tracker Activities'!B${annualRow}:E${annualRow}`, values: [[employee, type, start, end]] },
+        { range: `'Leave Tracker Activities'!G${annualRow}:I${annualRow}`, values: [[reason, 'Pending', todayISO()]] },
+        { range: `'Leave Tracker Activities'!M${annualRow}`, values: [[halfDay ? 'Yes' : 'No']] },
+      ]);
+    }
+    if (splitUnpaid){
+      unpaidRow = await firstBlankRow(RNG.logRange.sheet, 'B', RNG.logRange.firstRow, RNG.logRange.lastRow);
+      await apiBatchUpdate([
+        { range: `'Leave Tracker Activities'!B${unpaidRow}:E${unpaidRow}`, values: [[employee, 'Unpaid Leave', splitUnpaid.start, splitUnpaid.end]] },
+        { range: `'Leave Tracker Activities'!G${unpaidRow}:I${unpaidRow}`, values: [[reason, 'Pending', todayISO()]] },
+        { range: `'Leave Tracker Activities'!M${unpaidRow}`, values: [['No']] },
+      ]);
+    }
     document.getElementById('requestForm').reset();
     // form.reset() only restores tracked form VALUES (like the checkbox's checked state) -- it
     // doesn't touch the `disabled` property we set by hand when Half day was checked, so without
@@ -806,7 +969,9 @@ document.getElementById('requestForm').addEventListener('submit', async (e)=>{
     // refresh below replaces it out from under it \u2014 and so a failure here is never silently
     // swallowed the way a detached .catch() would.
     try{
-      await sendSubmissionEmails({ employee, type, start, end, reason, halfDay, row });
+      if (annualRow) await sendSubmissionEmails({ employee, type, start, end, reason, halfDay, row: annualRow });
+      if (unpaidRow) await sendSubmissionEmails({ employee, type:'Unpaid Leave', start: splitUnpaid.start,
+                                                    end: splitUnpaid.end, reason, halfDay:false, row: unpaidRow });
     }catch(emailErr){
       console.error('Email send failed', emailErr);
       showToast('Request submitted, but the notification email hit an error: ' + emailErr.message, true, false, 6000);
@@ -953,12 +1118,12 @@ function renderBalances(){
     if (typeof h === 'string' && h.endsWith('Available')){
       const label = h.replace(/\s*Available$/,'').trim();
       const projIdx = header.findIndex(h2=> h2===label+' Projected');
-      tiles.push({ label, avail: row[i], proj: projIdx>-1 ? row[projIdx] : null });
+      tiles.push({ label, avail: fmtBalanceNum(row[i]), proj: projIdx>-1 ? fmtBalanceNum(row[projIdx]) : null });
     }
   });
   header.forEach((h,i)=>{
     if (typeof h === 'string' && h.endsWith('Taken (YTD)')){
-      tiles.push({ label: h.replace(/\s*Taken \(YTD\)$/,'').trim(), avail: null, ytd: row[i] });
+      tiles.push({ label: h.replace(/\s*Taken \(YTD\)$/,'').trim(), avail: null, ytd: fmtBalanceNum(row[i]) });
     }
   });
 
@@ -1050,6 +1215,12 @@ function colIndexToLetter(idx){
 }
 // Which leave types actually have an editable Current Balance column (only the fully
 // balance-tracked types do \u2014 Compassionate/Parental/etc. don't work as a running balance).
+// Consistent 2-decimal display for every balance figure across the app, so a whole number
+// (e.g. 8) and a precise one (e.g. 13.27) never look inconsistent side by side.
+function fmtBalanceNum(n){
+  const v = Number(n);
+  return (isNaN(v) ? 0 : v).toFixed(2);
+}
 function getCurrentBalanceTypes(){
   return DATA.balances.header
     .filter(h => typeof h === 'string' && h.endsWith('Current Balance'))
@@ -1057,29 +1228,25 @@ function getCurrentBalanceTypes(){
 }
 function renderBalancesAdmin(){
   const host = document.getElementById('balancesAdminTable');
+  const asOfEl = document.getElementById('balancesAdminAsOf');
+  if (asOfEl) asOfEl.textContent = fmtDate(todayISO());
   const types = getCurrentBalanceTypes();
   if (!types.length){ host.innerHTML = '<div class="empty">No current-balance columns found on the sheet.</div>'; return; }
   const active = DATA.employees.filter(e => e.included !== 'Exclude');
   if (!active.length){ host.innerHTML = '<div class="empty">No employees yet.</div>'; return; }
 
-  let html = '<table><thead><tr><th>Employee</th>'
-    + types.map(t => `<th>${t}<br><span style="font-weight:400;text-transform:none;">balance / as of</span></th>`).join('')
-    + '<th></th></tr></thead><tbody>';
+  // Shown/edited here is the live, continuously-accurate Available figure (same number as the
+  // My Balances tab) \u2014 genuinely accurate as of today for everyone, regardless of when their
+  // underlying balance was last corrected. The per-person "as of" date this relies on internally
+  // still exists on the sheet, it's just no longer something anyone here needs to think about.
+  let html = '<table><thead><tr><th>Employee</th>' + types.map(t => `<th>${t}</th>`).join('') + '<th></th></tr></thead><tbody>';
   active.forEach(emp => {
     const balRow = DATA.balances.rows.find(r => r[0] === emp.name);
     html += `<tr data-emp-row="${emp.row}"><td>${emp.name}</td>`;
     types.forEach(t => {
-      const balIdx = DATA.balances.header.findIndex(h => h === t + ' Current Balance');
-      const aofIdx = DATA.balances.header.findIndex(h => h === t + ' Balance As Of');
-      const val = (balRow && balIdx > -1 && balRow[balIdx] !== undefined) ? balRow[balIdx] : 0;
-      // Balance As Of comes back as a raw date serial, same as any other sheet date \u2014 shown
-      // here read-only, purely for reference; saving always stamps today automatically below.
-      const aofRaw = (balRow && aofIdx > -1) ? balRow[aofIdx] : '';
-      const aofIso = typeof aofRaw === 'number' ? serialToISO(aofRaw) : (aofRaw || todayISO());
-      html += `<td style="white-space:nowrap;">`
-            + `<input type="number" step="0.5" class="ob-input" data-type="${t}" value="${val}" style="width:70px;"> `
-            + `<span class="hint" style="margin:0;">as of ${fmtDate(aofIso)}</span>`
-            + `</td>`;
+      const availIdx = DATA.balances.header.findIndex(h => h === t + ' Available');
+      const val = (balRow && availIdx > -1 && balRow[availIdx] !== undefined) ? fmtBalanceNum(balRow[availIdx]) : fmtBalanceNum(0);
+      html += `<td><input type="number" step="0.01" class="ob-input" data-type="${t}" value="${val}" style="width:80px;"></td>`;
     });
     html += `<td><button class="btn btn-outline btn-sm" onclick="saveCurrentBalances(${emp.row})">Save</button></td></tr>`;
   });
@@ -1090,15 +1257,24 @@ async function saveCurrentBalances(employeeConfigRow){
   try{
     const rowEl = document.querySelector(`tr[data-emp-row="${employeeConfigRow}"]`);
     const balSheetRow = RNG.balancesFirstDataRow + (employeeConfigRow - RNG.employeesFull.firstRow);
+    const emp = DATA.employees.find(e => e.row === employeeConfigRow);
+    const balRow = emp ? DATA.balances.rows.find(r => r[0] === emp.name) : null;
     const writes = [];
     const today = todayISO();
     rowEl.querySelectorAll('.ob-input').forEach(inp => {
       const type = inp.dataset.type;
       const balIdx = DATA.balances.header.findIndex(h => h === type + ' Current Balance');
       const aofIdx = DATA.balances.header.findIndex(h => h === type + ' Balance As Of');
+      const takenIdx = DATA.balances.header.findIndex(h => h === type + ' Taken');
+      const desiredAvailable = Number(inp.value) || 0;
+      const currentTaken = (balRow && takenIdx > -1 && balRow[takenIdx] !== undefined) ? Number(balRow[takenIdx]) || 0 : 0;
+      // Available = Current Balance (as of today, so its own accrual-since-then is zero) minus
+      // Taken \u2014 so to make Available show what was typed, back-solve for the Current Balance
+      // that produces it, given today's Taken figure.
+      const newCurrentBalance = desiredAvailable + currentTaken;
       if (balIdx > -1){
         writes.push({ range: `'Leave Tracker Activities'!${colIndexToLetter(balIdx)}${balSheetRow}`,
-                      values: [[Number(inp.value) || 0]] });
+                      values: [[newCurrentBalance]] });
       }
       // Always stamp today \u2014 no separate date field to remember to update, so a correction
       // can never accidentally leave a stale "as of" date behind.

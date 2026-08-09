@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leave Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://accounts.google.com/gsi/client"></script>
+<style>
+  :root{
+    --navy:#1F4E5F; --navy-deep:#163A47; --blue:#2E75B6;
+    --bg:#F3F5F7; --surface:#FFFFFF; --border:#E1E5EA;
+    --ink:#1B2733; --ink-soft:#5B6B78; --ink-faint:#8B99A6;
+    --green:#3F8F5F; --green-bg:#E7F4EC;
+    --amber:#B8860B; --amber-bg:#FBF1DA;
+    --red:#C0392B; --red-bg:#FBEAE8;
+    --radius:10px; --radius-sm:6px;
+    --shadow:0 1px 2px rgba(20,30,40,.06), 0 4px 14px rgba(20,30,40,.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:'Inter',system-ui,-apple-system,sans-serif;
+    font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  button{font-family:inherit; cursor:pointer;}
+  input,select,textarea{font-family:inherit; font-size:14px;}
+  a{color:var(--blue);}
+  ::selection{background:#CFE3F0;}
+
+  /* ---------- Layout shell ---------- */
+  #app{display:none; min-height:100vh; flex-direction:column;}
+  #app.ready{display:flex;}
+  header.topbar{
+    background:var(--navy); color:#fff; padding:14px 24px;
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    flex-wrap:wrap;
+  }
+  .brand{display:flex; align-items:baseline; gap:10px;}
+  .brand h1{font-size:18px; font-weight:700; margin:0; letter-spacing:-.2px;}
+  .brand .sub{font-size:12px; color:#B9CBD3;}
+  .who{display:flex; align-items:center; gap:10px; font-size:13px;}
+  .who .name{font-weight:600;}
+  .who .badge{
+    background:rgba(255,255,255,.15); border-radius:20px; padding:2px 10px;
+    font-size:11px; text-transform:uppercase; letter-spacing:.04em; font-weight:600;
+  }
+  .btn{
+    border:none; border-radius:var(--radius-sm); padding:8px 14px; font-size:13px;
+    font-weight:600; display:inline-flex; align-items:center; gap:6px;
+    transition:background .12s, box-shadow .12s;
+  }
+  .btn-primary{background:var(--blue); color:#fff;}
+  .btn-primary:hover{background:#2963A0;}
+  .btn-ghost{background:rgba(255,255,255,.12); color:#fff;}
+  .btn-ghost:hover{background:rgba(255,255,255,.22);}
+  .btn-outline{background:#fff; color:var(--navy); border:1px solid var(--border);}
+  .btn-outline:hover{background:#F5F7F9;}
+  .btn-danger{background:var(--red); color:#fff;}
+  .btn-danger:hover{background:#A5301F;}
+  .btn-sm{padding:5px 10px; font-size:12px;}
+  .btn:disabled{opacity:.5; cursor:not-allowed;}
+
+  nav.tabs{
+    background:var(--surface); border-bottom:1px solid var(--border);
+    display:flex; gap:4px; padding:0 20px; overflow-x:auto;
+  }
+  nav.tabs button{
+    background:none; border:none; padding:13px 16px; font-size:13.5px; font-weight:600;
+    color:var(--ink-soft); border-bottom:2.5px solid transparent; white-space:nowrap;
+  }
+  nav.tabs button.active{color:var(--navy); border-bottom-color:var(--blue);}
+  nav.tabs button:hover:not(.active){color:var(--ink);}
+
+  main{flex:1; padding:22px 24px 60px; max-width:1280px; width:100%; margin:0 auto;}
+  .view{display:none;}
+  .view.active{display:block;}
+
+  h2.view-title{font-size:19px; font-weight:700; margin:0 0 4px; color:var(--navy-deep);}
+  p.view-sub{color:var(--ink-soft); margin:0 0 20px; font-size:13.5px;}
+
+  .card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+    box-shadow:var(--shadow); padding:20px;
+  }
+  .card + .card{margin-top:16px;}
+
+  /* ---------- Setup / sign-in screen ---------- */
+  #setup{
+    min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  #setup .box{
+    max-width:420px; width:100%; background:var(--surface); border:1px solid var(--border);
+    border-radius:14px; box-shadow:var(--shadow); padding:32px;
+  }
+  #setup h1{font-size:20px; margin:0 0 6px; color:var(--navy-deep);}
+  #setup p{color:var(--ink-soft); font-size:13.5px; margin:0 0 20px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:5px;}
+  .field input,.field select,.field textarea{
+    width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:var(--radius-sm);
+    background:#fff; color:var(--ink);
+  }
+  .field input:focus,.field select:focus,.field textarea:focus{outline:2px solid #BFD9EC; outline-offset:0; border-color:var(--blue);}
+  .field select:disabled,.field input:disabled{background:#F2F2F2; color:var(--ink-soft); cursor:not-allowed;}
+  .field .hint{font-size:11.5px; color:var(--ink-faint); margin-top:4px;}
+  .g-signin-holder{margin-top:6px;}
+
+  /* ---------- Toast / banner ---------- */
+  #toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:var(--ink); color:#fff; padding:11px 18px; border-radius:8px;
+    font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.25); z-index:999;
+    display:none; max-width:90vw;
+  }
+  #toast.show{display:block;}
+  #toast.error{background:var(--red);}
+  #toast.ok{background:var(--green);}
+
+  .loading{color:var(--ink-faint); font-size:13px; padding:20px 0;}
+  .empty{color:var(--ink-faint); font-size:13px; padding:14px 0; font-style:italic;}
+
+  /* ---------- Submit form ---------- */
+  form#requestForm{display:grid; grid-template-columns:1fr 1fr; gap:14px 16px;}
+  form#requestForm .full{grid-column:1/-1;}
+  @media (max-width:640px){ form#requestForm{grid-template-columns:1fr;} }
+
+  /* ---------- Tables ---------- */
+  table{width:100%; border-collapse:collapse; font-size:13.5px;}
+  th{
+    text-align:left; padding:9px 10px; background:#F7F9FA; color:var(--ink-soft);
+    font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em;
+    border-bottom:1px solid var(--border);
+  }
+  td{padding:9px 10px; border-bottom:1px solid #EEF1F3; vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+
+  .status-pill{
+    display:inline-block; padding:3px 10px; border-radius:20px; font-size:11.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.03em;
+  }
+  .status-Approved{background:var(--green-bg); color:var(--green);}
+  .status-Pending{background:var(--amber-bg); color:var(--amber);}
+  .status-Rejected{background:var(--red-bg); color:var(--red);}
+
+  /* ---------- Timeline (Gantt) ---------- */
+  #timelineControls{display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;}
+  .gantt-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius);}
+  .gantt{border-collapse:collapse; min-width:100%;}
+  .gantt th, .gantt td{border:1px solid #EEF1F3; padding:0;}
+  .gantt th.emp-col, .gantt td.emp-col{
+    position:sticky; left:0; background:#fff; z-index:2; text-align:left; padding:7px 10px;
+    font-weight:600; font-size:12.5px; min-width:140px; border-right:2px solid var(--border);
+  }
+  .gantt th.emp-col{background:#F7F9FA; z-index:3;}
+  .gantt th.month-head{background:var(--navy); color:#fff; font-size:11.5px; font-weight:700; padding:6px 4px; text-align:center;}
+  .gantt th.day-head{background:#EEF2F5; color:var(--ink-soft); font-size:10px; font-weight:700; text-align:center; width:22px; min-width:22px; padding:4px 0;}
+  .gantt th.day-head.weekend{background:#E4E9ED;}
+  .gantt th.day-head.today{background:#FCE4D6; color:var(--red);}
+  .gantt td.daycell{width:22px; min-width:22px; height:26px; text-align:center; font-size:8px; font-weight:700; color:#fff;}
+  .gantt td.daycell.weekend-empty{background:#F5F7F8;}
+  .legend{display:flex; flex-wrap:wrap; gap:14px; margin-top:14px; font-size:12px; color:var(--ink-soft);}
+  .legend .item{display:flex; align-items:center; gap:6px;}
+  .legend .swatch{width:14px; height:14px; border-radius:3px; display:inline-block;}
+  .legend .swatch.light{border:1px solid var(--border);}
+
+  /* ---------- Balances ---------- */
+  .bal-emp-select{max-width:280px;}
+  .bal-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-top:16px;}
+  .bal-tile{border:1px solid var(--border); border-radius:var(--radius-sm); padding:13px 14px; background:#fbfcfd;}
+  .bal-tile .lt{font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.02em;}
+  .bal-tile .avail{font-size:22px; font-weight:700; color:var(--navy-deep); margin:4px 0 2px;}
+  .bal-tile .proj{font-size:11.5px; color:var(--ink-faint);}
+
+  /* ---------- Admin ---------- */
+  .subhead{font-size:13.5px; font-weight:700; color:var(--navy-deep); margin:22px 0 10px;}
+  .subhead:first-child{margin-top:0;}
+  .inline-form{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;}
+  .inline-form input,.inline-form select{padding:7px 9px; border:1px solid var(--border); border-radius:var(--radius-sm); font-size:13px;}
+
+  .tag{display:inline-block; padding:2px 8px; border-radius:5px; font-size:11px; font-weight:600; background:#EEF2F5; color:var(--ink-soft);}
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <div class="box">
+    <h1>Leave Tracker</h1>
+    <p>Sign in with your work Google account to submit or approve leave, and to see the team's
+       timeline and balances.</p>
+    <button class="btn btn-primary" id="signInBtn" style="width:100%; justify-content:center; padding:11px;">Sign in with Google</button>
+    <p id="setupError" style="color:#C0392B; font-size:12.5px; margin-top:14px; display:none;"></p>
+  </div>
+</div>
+
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <h1>Leave Tracker</h1>
+      <span class="sub" id="sheetLabel"></span>
+    </div>
+    <div class="who">
+      <span class="badge" id="adminBadge" style="display:none;">Admin</span>
+      <span class="name" id="userName"></span>
+      <button class="btn btn-ghost btn-sm" id="refreshBtn">↻ Sync</button>
+      <button class="btn btn-ghost btn-sm" id="signOutBtn">Sign out</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-view="submit" class="active">Submit Request</button>
+    <button data-view="timeline">Team Timeline</button>
+    <button data-view="balances">My Balances</button>
+    <button data-view="admin" id="adminTabBtn" style="display:none;">Admin</button>
+  </nav>
+
+  <main>
+
+    <section class="view active" id="view-submit">
+      <h2 class="view-title">Submit a leave request</h2>
+      <p class="view-sub">Pick your name, the leave type, and the dates you need off.</p>
+      <div class="card">
+        <form id="requestForm">
+          <div class="field">
+            <label for="reqEmployee">Employee</label>
+            <select id="reqEmployee" required></select>
+            <div class="hint" id="reqEmployeeHint" style="display:none;"></div>
+          </div>
+          <div class="field">
+            <label for="reqType">Leave type</label>
+            <select id="reqType" required></select>
+          </div>
+          <div class="field">
+            <label for="reqStart">Start date</label>
+            <input type="date" id="reqStart" required>
+          </div>
+          <div class="field">
+            <label for="reqEnd">End date</label>
+            <input type="date" id="reqEnd" required>
+          </div>
+          <div class="field full">
+            <label for="reqReason">Reason / notes (optional)</label>
+            <textarea id="reqReason" rows="2"></textarea>
+          </div>
+          <div class="full">
+            <button type="submit" class="btn btn-primary" id="submitReqBtn">Submit request</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <div class="subhead" style="margin-top:0;">My recent requests</div>
+        <div id="myRequestsTable"><div class="loading">Loading…</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-timeline">
+      <h2 class="view-title">Team leave timeline</h2>
+      <p class="view-sub">Solid colour = approved. Lighter colour with a dot = still pending. Family & Domestic Violence Leave is never shown here.</p>
+      <div id="timelineControls">
+        <div class="field" style="margin:0;">
+          <label>From</label>
+          <input type="text" id="tlFrom" disabled class="mono" style="background:#F2F2F2; width:150px;">
+        </div>
+        <div class="field" style="margin:0;">
+          <label for="tlTo">To (max 6 months ahead)</label>
+          <select id="tlTo" style="width:170px;"></select>
+        </div>
+      </div>
+      <div class="gantt-wrap"><div id="ganttHost"><div class="loading">Loading…</div></div></div>
+      <div class="legend" id="legendHost"></div>
+    </section>
+
+    <section class="view" id="view-balances">
+      <h2 class="view-title">Leave balances</h2>
+      <p class="view-sub">Available and projected balance per leave category. Everyone can see everyone's.</p>
+      <div class="field bal-emp-select">
+        <label for="balEmployee">Employee</label>
+        <select id="balEmployee"></select>
+      </div>
+      <div id="balancesHost"><div class="loading">Loading…</div></div>
+    </section>
+
+    <section class="view" id="view-admin">
+      <h2 class="view-title">Admin</h2>
+      <p class="view-sub">Approve or reject requests, and manage the employee list.</p>
+
+      <div class="card">
+        <div class="subhead">Pending requests</div>
+        <div id="pendingTable"><div class="loading">Loading…</div></div>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <div class="subhead">Employees</div>
+        <div id="employeesTable"><div class="loading">Loading…</div></div>
+        <div class="subhead">Add a new employee</div>
+        <div class="inline-form">
+          <input type="text" id="newEmpName" placeholder="Full name">
+          <input type="email" id="newEmpEmail" placeholder="Email">
+          <select id="newEmpState">
+            <option>NSW</option><option>VIC</option><option>QLD</option><option>WA</option>
+            <option>SA</option><option>TAS</option><option>ACT</option><option>NT</option>
+          </select>
+          <input type="date" id="newEmpStart">
+          <button class="btn btn-primary btn-sm" id="addEmpBtn">Add employee</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* =====================================================================
+   CONFIG / STORAGE
+   ===================================================================== */
+// ── Admin: set these two once, then this file is ready for the whole team ──
+// Sheet ID: from your Google Sheet's URL, the long ID between /d/ and /edit
+// Client ID: from Google Cloud Console → APIs & Services → Credentials
+//            (see App_Setup_Guide.md — this value is not a secret, it's fine
+//            to leave visible in this file)
+const SHEET_ID = 'PASTE_YOUR_GOOGLE_SHEET_ID_HERE';
+const CLIENT_ID = 'PASTE_YOUR_OAUTH_CLIENT_ID_HERE.apps.googleusercontent.com';
+const CFG = { sheetId: SHEET_ID, clientId: CLIENT_ID };
+
+// Sheet layout \u2014 must match the LeaveTracker.xlsx structure
+const RNG = {
+  leavePolicy: "Config!A6:C11",
+  approvers:   "Config!A15:A17",       // name only \u2014 must match an Employees name exactly
+  employees:   "Config!A132:E181",
+  employeesFull: { sheet: "Config", firstRow: 132, lastRow: 181 },
+  log:         "'Leave Tracker Activities'!A6:L105",
+  logRange:    { sheet: "Leave Tracker Activities", firstRow: 6, lastRow: 105 },
+  balances:    "'Leave Tracker Activities'!A113:R163",
+};
+
+const TYPE_COLORS = {
+  "Annual Leave": "#4472C4",
+  "Personal/Carer's Leave": "#548235",
+  "Compassionate & Bereavement Leave": "#7030A0",
+  "Parental Leave": "#D6336C",
+  "Community Service Leave (Jury Duty / Emergency Mgmt)": "#8B5A2B",
+  "Unpaid Leave": "#7F7F7F",
+};
+function lighten(hex, factor=0.72){
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  const L=v=>Math.round(v+(255-v)*factor);
+  return `#${L(r).toString(16).padStart(2,'0')}${L(g).toString(16).padStart(2,'0')}${L(b).toString(16).padStart(2,'0')}`;
+}
+
+/* =====================================================================
+   AUTH (Google Identity Services)
+   ===================================================================== */
+let tokenClient = null;
+let accessToken = null;
+let me = { email: null, name: null };
+let isAdmin = false;
+let myEmployeeName = null;
+
+function initGSI(){
+  if (typeof google === 'undefined' || !google.accounts){
+    const errEl = document.getElementById('setupError');
+    errEl.textContent = 'Could not reach Google\u2019s sign-in service. Check your internet connection '
+                       + 'and reload the page \u2014 an ad blocker or privacy extension can also cause this.';
+    errEl.style.display = 'block';
+    return;
+  }
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CFG.clientId,
+    scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+    callback: async (resp) => {
+      if (resp.error) { showToast('Sign-in failed: ' + resp.error, true); return; }
+      accessToken = resp.access_token;
+      await onSignedIn();
+    },
+  });
+}
+
+async function onSignedIn(){
+  try{
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers:{ Authorization:'Bearer ' + accessToken }
+    });
+    const info = await res.json();
+    me.email = (info.email || '').toLowerCase();
+    me.name = info.name || info.email;
+  }catch(e){ console.error(e); }
+
+  document.getElementById('setup').style.display = 'none';
+  document.getElementById('app').classList.add('ready');
+  document.getElementById('userName').textContent = me.name || '';
+  document.getElementById('sheetLabel').textContent = 'Sheet connected';
+
+  await loadEverything();
+}
+
+function signOut(){
+  accessToken = null;
+  document.getElementById('app').classList.remove('ready');
+  document.getElementById('setup').style.display = 'flex';
+}
+
+/* =====================================================================
+   SHEETS API HELPERS
+   ===================================================================== */
+async function apiGet(range){
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${CFG.sheetId}/values/${encodeURIComponent(range)}`;
+  const res = await fetch(url, { headers:{ Authorization:'Bearer ' + accessToken }});
+  if (!res.ok) throw new Error('Read failed (' + res.status + ') for ' + range);
+  const data = await res.json();
+  return data.values || [];
+}
+async function apiBatchUpdate(dataArr){
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${CFG.sheetId}/values:batchUpdate`;
+  const res = await fetch(url, {
+    method:'POST',
+    headers:{ Authorization:'Bearer ' + accessToken, 'Content-Type':'application/json' },
+    body: JSON.stringify({ valueInputOption:'USER_ENTERED', data: dataArr })
+  });
+  if (!res.ok) throw new Error('Write failed (' + res.status + ')');
+  return res.json();
+}
+// Finds the first row (within [firstRow,lastRow]) where the given single-column
+// range is blank, by reading that column fresh. Used so writes land in the same
+// pre-built formula rows the spreadsheet already has ready and waiting.
+async function firstBlankRow(sheet, col, firstRow, lastRow){
+  const vals = await apiGet(`'${sheet}'!${col}${firstRow}:${col}${lastRow}`);
+  for (let i=0;i<(lastRow-firstRow+1);i++){
+    const v = vals[i] ? vals[i][0] : undefined;
+    if (v === undefined || v === '') return firstRow + i;
+  }
+  throw new Error('No blank rows left \u2014 the sheet needs more rows added.');
+}
+
+/* =====================================================================
+   DATA (in-memory cache, refreshed on Sync)
+   ===================================================================== */
+let DATA = { leaveTypes:[], approvers:[], employees:[], log:[], balances:{header:[], rows:[]} };
+
+async function loadEverything(){
+  showToast('Syncing\u2026');
+  try{
+    const [lp, ap, emp, log, bal] = await Promise.all([
+      apiGet(RNG.leavePolicy), apiGet(RNG.approvers), apiGet(RNG.employees),
+      apiGet(RNG.log), apiGet(RNG.balances),
+    ]);
+    DATA.leaveTypes = lp.filter(r=>r[0]).map(r=>r[0]);
+    DATA.approvers = ap.filter(r=>r[0]).map(r=>(r[0]||'').trim());
+    // employees: [name,email,state,included,startDate], keep sheet row number for writes
+    DATA.employees = emp.map((r,i)=>({ row:RNG.employeesFull.firstRow+i, name:r[0]||'', email:(r[1]||'').toLowerCase(),
+                                        state:r[2]||'', included:r[3]||'', start:r[4]||'' }))
+                         .filter(e=>e.name);
+    // log: keep sheet row number for admin actions
+    DATA.log = log.map((r,i)=>({ row:6+i, id:r[0]||'', employee:r[1]||'', type:r[2]||'',
+                                  start:r[3]||'', end:r[4]||'', days:r[5]||'', reason:r[6]||'',
+                                  status:r[7]||'', requested:r[8]||'', approver:r[9]||'',
+                                  decided:r[10]||'', notes:r[11]||'' }))
+                       .filter(r=>r.employee);
+    DATA.balances = { header: bal[0]||[], rows: bal.slice(1).filter(r=>r[0]) };
+
+    // Approvers only lists a name (it must match an Employees name exactly \u2014 no email
+    // stored there anymore), so admin status is: find my employee record from my signed-in
+    // email, then check whether *that name* is on the Approvers list.
+    const myEmp = DATA.employees.find(e => e.email === me.email);
+    myEmployeeName = myEmp ? myEmp.name : null;
+    isAdmin = myEmployeeName ? DATA.approvers.includes(myEmployeeName) : false;
+
+    document.getElementById('adminBadge').style.display = isAdmin ? 'inline-block' : 'none';
+    document.getElementById('adminTabBtn').style.display = isAdmin ? 'inline-block' : 'none';
+
+    renderAll();
+    showToast('Synced', false, true);
+  }catch(e){
+    console.error(e);
+    showToast('Sync failed: ' + e.message, true);
+  }
+}
+
+function renderAll(){
+  populateEmployeeSelects();
+  populateTypeSelect();
+  renderMyRequests();
+  renderTimeline();
+  renderBalances();
+  if (isAdmin){ renderPending(); renderEmployeesAdmin(); }
+}
+
+/* =====================================================================
+   UI: small helpers
+   ===================================================================== */
+function showToast(msg, isError=false, ok=false){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show' + (isError?' error':'') + (ok?' ok':'');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=>{ t.className=''; }, 3200);
+}
+function fmtDate(d){
+  if (!d) return '';
+  const dt = new Date(d);
+  if (isNaN(dt)) return d;
+  return dt.toLocaleDateString('en-AU', { day:'2-digit', month:'short', year:'numeric' });
+}
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+
+function populateEmployeeSelects(){
+  const active = DATA.employees.filter(e=>e.included!=='Exclude');
+  const opts = active.map(e=>`<option value="${e.name}">${e.name}</option>`).join('');
+  const reqSel = document.getElementById('reqEmployee');
+  const balSel = document.getElementById('balEmployee');
+  const hint = document.getElementById('reqEmployeeHint');
+  const submitBtn = document.getElementById('submitReqBtn');
+
+  balSel.innerHTML = opts;
+  if (myEmployeeName) balSel.value = myEmployeeName;
+
+  if (isAdmin){
+    // Admins can submit on behalf of anyone \u2014 e.g. logging leave for someone who
+    // called in and can't do it themselves.
+    reqSel.innerHTML = opts;
+    reqSel.disabled = false;
+    if (myEmployeeName) reqSel.value = myEmployeeName;
+    hint.style.display = 'none';
+    submitBtn.disabled = false;
+  } else if (myEmployeeName){
+    // Everyone else can only submit for themselves.
+    reqSel.innerHTML = `<option value="${myEmployeeName}">${myEmployeeName}</option>`;
+    reqSel.disabled = true;
+    hint.textContent = 'Only Admins can submit a request on someone else\u2019s behalf.';
+    hint.style.display = 'block';
+    submitBtn.disabled = false;
+  } else {
+    // Signed-in email doesn't match any employee record \u2014 don't guess who they are.
+    reqSel.innerHTML = '<option value="">\u2014 not linked to an employee record \u2014</option>';
+    reqSel.disabled = true;
+    hint.textContent = 'Your signed-in email isn\u2019t on the Employees list, so requests can\u2019t be '
+                      + 'submitted for you yet \u2014 ask an admin to add it.';
+    hint.style.display = 'block';
+    submitBtn.disabled = true;
+  }
+}
+function populateTypeSelect(){
+  document.getElementById('reqType').innerHTML =
+    DATA.leaveTypes.map(t=>`<option value="${t}">${t}</option>`).join('');
+}
+
+/* =====================================================================
+   VIEW: Submit request
+   ===================================================================== */
+document.getElementById('requestForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const btn = document.getElementById('submitReqBtn');
+  btn.disabled = true; btn.textContent = 'Submitting\u2026';
+  try{
+    const employee = document.getElementById('reqEmployee').value;
+    const type = document.getElementById('reqType').value;
+    const start = document.getElementById('reqStart').value;
+    const end = document.getElementById('reqEnd').value;
+    const reason = document.getElementById('reqReason').value;
+    if (!employee || !type || !start || !end) throw new Error('Please fill in all required fields.');
+    if (end < start) throw new Error('End date is before the start date.');
+    if (!isAdmin && employee !== myEmployeeName) throw new Error('You can only submit requests for yourself.');
+
+    const row = await firstBlankRow(RNG.logRange.sheet, 'B', RNG.logRange.firstRow, RNG.logRange.lastRow);
+    await apiBatchUpdate([
+      { range: `'Leave Tracker Activities'!B${row}:E${row}`, values: [[employee, type, start, end]] },
+      { range: `'Leave Tracker Activities'!G${row}:I${row}`, values: [[reason, 'Pending', todayISO()]] },
+    ]);
+    document.getElementById('requestForm').reset();
+    showToast('Request submitted \u2014 pending approval', false, true);
+    await loadEverything();
+  }catch(err){
+    showToast(err.message, true);
+  }finally{
+    btn.disabled = false; btn.textContent = 'Submit request';
+  }
+});
+
+function renderMyRequests(){
+  const host = document.getElementById('myRequestsTable');
+  const name = document.getElementById('reqEmployee').value || myEmployeeName;
+  const mine = DATA.log.filter(r=>r.employee===name)
+                        .sort((a,b)=> (a.start<b.start?1:-1));
+  if (!mine.length){ host.innerHTML = '<div class="empty">No requests yet.</div>'; return; }
+  host.innerHTML = `<table><thead><tr>
+    <th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Status</th><th>Reason</th>
+    </tr></thead><tbody>` +
+    mine.map(r=>`<tr>
+      <td>${r.type}</td><td>${fmtDate(r.start)}</td><td>${fmtDate(r.end)}</td><td>${r.days}</td>
+      <td><span class="status-pill status-${r.status}">${r.status}</span></td>
+      <td>${r.reason||''}</td>
+    </tr>`).join('') + `</tbody></table>`;
+}
+document.getElementById('reqEmployee').addEventListener('change', renderMyRequests);
+
+/* =====================================================================
+   VIEW: Team Timeline (rendered client-side from raw log data)
+   ===================================================================== */
+function monthLabel(d){ return d.toLocaleDateString('en-AU',{month:'long',year:'numeric'}); }
+function startOfMonth(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
+function addMonths(d,n){ return new Date(d.getFullYear(), d.getMonth()+n, 1); }
+function daysInMonth(d){ return new Date(d.getFullYear(), d.getMonth()+1, 0).getDate(); }
+function isoDate(d){ return d.toISOString().slice(0,10); }
+
+function initTimelineControls(){
+  const from = startOfMonth(new Date());
+  document.getElementById('tlFrom').value = monthLabel(from);
+  const toSel = document.getElementById('tlTo');
+  toSel.innerHTML = '';
+  for (let k=0;k<=6;k++){
+    const d = addMonths(from,k);
+    const opt = document.createElement('option');
+    opt.value = k; opt.textContent = monthLabel(d);
+    toSel.appendChild(opt);
+  }
+  toSel.value = Math.min(2,6);
+  toSel.onchange = renderTimeline;
+}
+
+function renderTimeline(){
+  const host = document.getElementById('ganttHost');
+  const legendHost = document.getElementById('legendHost');
+  const from = startOfMonth(new Date());
+  const toK = parseInt(document.getElementById('tlTo').value || '2', 10);
+  const monthsToShow = toK + 1;
+  const today = isoDate(new Date());
+
+  const employees = DATA.employees.filter(e=>e.included!=='Exclude');
+
+  // Build month blocks with day counts
+  const blocks = [];
+  for (let m=0;m<monthsToShow;m++){
+    const md = addMonths(from,m);
+    blocks.push({ label: monthLabel(md), days: daysInMonth(md), monthDate: md });
+  }
+  const totalDays = blocks.reduce((s,b)=>s+b.days,0);
+
+  let html = '<table class="gantt"><thead><tr><th class="emp-col" rowspan="2">Employee</th>';
+  blocks.forEach(b=>{ html += `<th class="month-head" colspan="${b.days}">${b.label}</th>`; });
+  html += '</tr><tr>';
+  const dayCols = []; // flat list of {date, iso}
+  blocks.forEach(b=>{
+    for (let d=1; d<=b.days; d++){
+      const dt = new Date(b.monthDate.getFullYear(), b.monthDate.getMonth(), d);
+      const iso = isoDate(dt);
+      const dow = dt.getDay(); // 0 Sun .. 6 Sat
+      const weekend = (dow===0||dow===6);
+      const isToday = iso===today;
+      dayCols.push({iso, weekend});
+      html += `<th class="day-head${weekend?' weekend':''}${isToday?' today':''}">${d}</th>`;
+    }
+  });
+  html += '</tr></thead><tbody>';
+
+  employees.forEach(emp=>{
+    html += `<tr><td class="emp-col">${emp.name}</td>`;
+    dayCols.forEach(col=>{
+      const match = DATA.log.find(r => r.employee===emp.name && r.start<=col.iso && r.end>=col.iso
+                                        && (r.status==='Approved'||r.status==='Pending')
+                                        && r.type !== 'Family & Domestic Violence Leave');
+      if (match){
+        const base = TYPE_COLORS[match.type] || '#888';
+        const bg = match.status==='Approved' ? base : lighten(base);
+        const fg = match.status==='Approved' ? '#fff' : '#404040';
+        const label = match.status==='Approved' ? '' : '\u2022';
+        html += `<td class="daycell" style="background:${bg};color:${fg};" title="${emp.name} \u2014 ${match.type} (${match.status})">${label}</td>`;
+      } else {
+        html += `<td class="daycell${col.weekend?' weekend-empty':''}"></td>`;
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  host.innerHTML = html;
+
+  legendHost.innerHTML = Object.entries(TYPE_COLORS).map(([type,color])=>
+    `<div class="item"><span class="swatch" style="background:${color}"></span>${type.split('(')[0].trim()}</div>`
+  ).join('') + `<div class="item"><span class="swatch light" style="background:${lighten('#4472C4')}"></span>Lighter + \u2022 = Pending</div>`;
+}
+
+/* =====================================================================
+   VIEW: Balances
+   ===================================================================== */
+function renderBalances(){
+  const host = document.getElementById('balancesHost');
+  const name = document.getElementById('balEmployee').value || myEmployeeName;
+  const header = DATA.balances.header;
+  const row = DATA.balances.rows.find(r=>r[0]===name);
+  if (!row){ host.innerHTML = '<div class="empty">No balance data for this employee yet.</div>'; return; }
+
+  // Column groups we care about for tiles: look for "<Type> Available" / "<Type> Projected"
+  const tiles = [];
+  header.forEach((h,i)=>{
+    if (typeof h === 'string' && h.endsWith('Available')){
+      const label = h.replace(/\s*Available$/,'').trim();
+      const projIdx = header.findIndex(h2=> h2===label+' Projected');
+      tiles.push({ label, avail: row[i], proj: projIdx>-1 ? row[projIdx] : null });
+    }
+  });
+  header.forEach((h,i)=>{
+    if (typeof h === 'string' && h.endsWith('Taken (YTD)')){
+      tiles.push({ label: h.replace(/\s*Taken \(YTD\)$/,'').trim(), avail: null, ytd: row[i] });
+    }
+  });
+
+  host.innerHTML = `<div class="bal-grid">` + tiles.map(t=>`
+    <div class="bal-tile">
+      <div class="lt">${t.label}</div>
+      ${t.avail!==null
+        ? `<div class="avail">${t.avail} days</div><div class="proj">Projected: ${t.proj ?? '\u2014'} days</div>`
+        : `<div class="avail">${t.ytd} days</div><div class="proj">Taken this year</div>`}
+    </div>`).join('') + `</div>`;
+}
+document.getElementById('balEmployee').addEventListener('change', renderBalances);
+
+/* =====================================================================
+   VIEW: Admin
+   ===================================================================== */
+function renderPending(){
+  const host = document.getElementById('pendingTable');
+  const pending = DATA.log.filter(r=>r.status==='Pending');
+  if (!pending.length){ host.innerHTML = '<div class="empty">Nothing pending.</div>'; return; }
+  host.innerHTML = `<table><thead><tr>
+    <th>Employee</th><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Reason</th><th></th>
+    </tr></thead><tbody>` + pending.map(r=>`
+    <tr>
+      <td>${r.employee}</td><td>${r.type}</td><td>${fmtDate(r.start)}</td><td>${fmtDate(r.end)}</td>
+      <td>${r.days}</td><td>${r.reason||''}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn btn-primary btn-sm" onclick="decideRequest(${r.row},'Approved')">Approve</button>
+        <button class="btn btn-danger btn-sm" onclick="decideRequest(${r.row},'Rejected')">Reject</button>
+      </td>
+    </tr>`).join('') + `</tbody></table>`;
+}
+async function decideRequest(row, decision){
+  try{
+    await apiBatchUpdate([
+      { range: `'Leave Tracker Activities'!H${row}`, values: [[decision]] },
+      { range: `'Leave Tracker Activities'!J${row}:K${row}`, values: [[me.name, todayISO()]] },
+    ]);
+    showToast('Request ' + decision.toLowerCase(), false, true);
+    await loadEverything();
+  }catch(e){ showToast(e.message, true); }
+}
+
+function renderEmployeesAdmin(){
+  const host = document.getElementById('employeesTable');
+  host.innerHTML = `<table><thead><tr>
+    <th>Name</th><th>Email</th><th>State</th><th>Status</th><th></th>
+    </tr></thead><tbody>` + DATA.employees.map(e=>`
+    <tr>
+      <td>${e.name}</td><td>${e.email}</td><td>${e.state}</td>
+      <td><span class="tag">${e.included||'Include'}</span></td>
+      <td>
+        ${e.included==='Exclude'
+          ? `<button class="btn btn-outline btn-sm" onclick="setIncluded(${e.row},'Include')">Re-include</button>`
+          : `<button class="btn btn-outline btn-sm" onclick="setIncluded(${e.row},'Exclude')">Exclude</button>`}
+      </td>
+    </tr>`).join('') + `</tbody></table>`;
+}
+async function setIncluded(row, val){
+  try{
+    await apiBatchUpdate([{ range: `Config!D${row}`, values: [[val]] }]);
+    showToast('Updated', false, true);
+    await loadEverything();
+  }catch(e){ showToast(e.message, true); }
+}
+document.getElementById('addEmpBtn').addEventListener('click', async ()=>{
+  const name = document.getElementById('newEmpName').value.trim();
+  const email = document.getElementById('newEmpEmail').value.trim();
+  const state = document.getElementById('newEmpState').value;
+  const start = document.getElementById('newEmpStart').value;
+  if (!name || !start){ showToast('Name and start date are required', true); return; }
+  try{
+    const row = await firstBlankRow('Config', 'A', RNG.employeesFull.firstRow, RNG.employeesFull.lastRow);
+    await apiBatchUpdate([
+      { range: `Config!A${row}:E${row}`, values: [[name, email, state, 'Include', start]] },
+    ]);
+    document.getElementById('newEmpName').value = '';
+    document.getElementById('newEmpEmail').value = '';
+    document.getElementById('newEmpStart').value = '';
+    showToast('Employee added', false, true);
+    await loadEverything();
+  }catch(e){ showToast(e.message, true); }
+});
+
+/* =====================================================================
+   NAV + INIT
+   ===================================================================== */
+document.querySelectorAll('nav.tabs button').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('view-' + btn.dataset.view).classList.add('active');
+  });
+});
+document.getElementById('refreshBtn').addEventListener('click', loadEverything);
+document.getElementById('signOutBtn').addEventListener('click', signOut);
+
+document.getElementById('signInBtn').addEventListener('click', ()=>{
+  const errEl = document.getElementById('setupError');
+  if (!CFG.sheetId || CFG.sheetId.startsWith('PASTE_') || !CFG.clientId || CFG.clientId.startsWith('PASTE_')){
+    errEl.textContent = 'This page hasn\u2019t been set up yet \u2014 an admin needs to add the Sheet ID and '
+                       + 'OAuth Client ID near the top of the file. See App_Setup_Guide.md.';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (!tokenClient){
+    errEl.textContent = 'Sign-in isn\u2019t ready yet \u2014 Google\u2019s sign-in service may still be loading, or '
+                       + 'didn\u2019t reach your browser. Reload the page and try again in a few seconds.';
+    errEl.style.display = 'block';
+    initGSI();
+    return;
+  }
+  errEl.style.display = 'none';
+  tokenClient.requestAccessToken();
+});
+
+window.addEventListener('load', ()=>{
+  initTimelineControls();
+  initGSI();
+});
+</script>
+</body>
+</html>

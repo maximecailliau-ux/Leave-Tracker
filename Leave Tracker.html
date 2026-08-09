@@ -497,7 +497,12 @@ function buildMimeMessage({to, cc, subject, body}){
   return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 async function gmailSend({to, cc, subject, body}){
-  if (!to) return;
+  if (!to){
+    console.error('Gmail send skipped \u2014 no recipient address was found for:', subject);
+    showToast('A notification email was skipped \u2014 couldn\u2019t find that person\u2019s email address '
+             + 'on the Employees list.', true, false, 6000);
+    return;
+  }
   try{
     const raw = buildMimeMessage({to, cc, subject, body});
     const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
@@ -515,6 +520,8 @@ async function gmailSend({to, cc, subject, body}){
         + 'recipient address looks invalid \u2014 check that employee\u2019s email on the Config tab.';
       else hint += ` (Google returned error ${res.status} \u2014 check the browser console for details.)`;
       showToast(hint, true, false, 6000);
+    } else {
+      console.log('Gmail send succeeded, to:', to, '| subject:', subject);
     }
   }catch(e){
     console.error('Gmail send error:', e);

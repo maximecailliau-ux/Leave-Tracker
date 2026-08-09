@@ -783,8 +783,15 @@ document.getElementById('requestForm').addEventListener('submit', async (e)=>{
     document.getElementById('reqEnd').disabled = false;
     document.getElementById('balanceBox').style.display = 'none';
     showToast('Request submitted \u2014 pending approval', false, true);
-    const days = halfDay ? 0.5 : null; // exact day count recalculated after reload; email uses a best-effort figure
-    sendSubmissionEmails({ employee, type, start, end, reason, halfDay, row }).catch(err=>console.error('Email send failed', err));
+    // Awaited (not fire-and-forget) so it finishes reading DATA before the loadEverything()
+    // refresh below replaces it out from under it \u2014 and so a failure here is never silently
+    // swallowed the way a detached .catch() would.
+    try{
+      await sendSubmissionEmails({ employee, type, start, end, reason, halfDay, row });
+    }catch(emailErr){
+      console.error('Email send failed', emailErr);
+      showToast('Request submitted, but the notification email hit an error: ' + emailErr.message, true, false, 6000);
+    }
     await loadEverything();
   }catch(err){
     showToast(err.message, true);
@@ -968,15 +975,26 @@ function renderPending(){
 async function decideRequest(row, decision){
   try{
     const original = DATA.log.find(r => r.row === row); // capture details before reload overwrites DATA.log
+    // Write the Approvers-list name (e.g. "Maxime"), not the raw Google account display name
+    // (e.g. "Maxime Cailliau") \u2014 the Approved/Rejected By column's dropdown only allows
+    // values from the Approvers list, so writing anything else trips its validation. Safe to
+    // rely on myEmployeeName here: decideRequest is only reachable from the Admin view, which
+    // only renders when isAdmin is true, which itself requires myEmployeeName to already match
+    // an Approvers entry.
+    const approverLabel = myEmployeeName || me.name;
     await apiBatchUpdate([
       { range: `'Leave Tracker Activities'!H${row}`, values: [[decision]] },
-      { range: `'Leave Tracker Activities'!J${row}:K${row}`, values: [[me.name, todayISO()]] },
+      { range: `'Leave Tracker Activities'!J${row}:K${row}`, values: [[approverLabel, todayISO()]] },
     ]);
     showToast('Request ' + decision.toLowerCase(), false, true);
     if (decision === 'Approved' && original){
-      sendApprovalEmail({ employee: original.employee, type: original.type, start: original.start,
-                           end: original.end, reason: original.reason, approverName: me.name })
-        .catch(err => console.error('Approval email failed', err));
+      try{
+        await sendApprovalEmail({ employee: original.employee, type: original.type, start: original.start,
+                                   end: original.end, reason: original.reason, approverName: approverLabel });
+      }catch(emailErr){
+        console.error('Approval email failed', emailErr);
+        showToast('Approved, but the notification email hit an error: ' + emailErr.message, true, false, 6000);
+      }
     }
     await loadEverything();
   }catch(e){ showToast(e.message, true); }

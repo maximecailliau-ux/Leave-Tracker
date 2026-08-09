@@ -118,8 +118,8 @@
   #toast{
     position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
     background:var(--ink); color:#fff; padding:11px 18px; border-radius:8px;
-    font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.25); z-index:999;
-    display:none; max-width:90vw;
+    font-size:13px; line-height:1.5; box-shadow:0 6px 20px rgba(0,0,0,.25); z-index:999;
+    display:none; max-width:min(90vw, 480px); text-align:center;
   }
   #toast.show{display:block;}
   #toast.error{background:var(--red);}
@@ -348,7 +348,7 @@ const RNG = {
   employeesFull: { sheet: "Config", firstRow: 132, lastRow: 181 },
   log:         "'Leave Tracker Activities'!A6:M105",
   logRange:    { sheet: "Leave Tracker Activities", firstRow: 6, lastRow: 105 },
-  balances:    "'Leave Tracker Activities'!A113:R163",
+  balances:    "'Leave Tracker Activities'!A114:T164",
 };
 
 const TYPE_COLORS = {
@@ -495,8 +495,21 @@ async function gmailSend({to, cc, subject, body}){
       headers:{ Authorization:'Bearer ' + accessToken, 'Content-Type':'application/json' },
       body: JSON.stringify({ raw }),
     });
-    if (!res.ok){ console.error('Gmail send failed:', res.status, await res.text()); }
-  }catch(e){ console.error('Gmail send error:', e); }
+    if (!res.ok){
+      const errText = await res.text();
+      console.error('Gmail send failed:', res.status, errText);
+      let hint = 'Notification email couldn\u2019t be sent.';
+      if (res.status === 403) hint += ' Google says the email-sending permission hasn\u2019t been '
+        + 'granted \u2014 try signing out and back in, and accept it when asked.';
+      else if (res.status === 400 && /invalid.*to|invalid.*recipient/i.test(errText)) hint += ' The '
+        + 'recipient address looks invalid \u2014 check that employee\u2019s email on the Config tab.';
+      else hint += ` (Google returned error ${res.status} \u2014 check the browser console for details.)`;
+      showToast(hint, true, false, 6000);
+    }
+  }catch(e){
+    console.error('Gmail send error:', e);
+    showToast('Notification email couldn\u2019t be sent \u2014 check the browser console for details.', true, false, 6000);
+  }
 }
 function getEmployeeEmail(name){
   const e = DATA.employees.find(x => x.name === name);
@@ -578,7 +591,11 @@ async function loadEverything(){
                                   status:r[7]||'', requested:serialToISO(r[8]), approver:r[9]||'',
                                   decided:serialToISO(r[10]), notes:r[11]||'', halfDay:r[12]||'No' }))
                        .filter(r=>r.employee);
-    DATA.balances = { header: bal[0]||[], rows: bal.slice(1).filter(r=>r[0]) };
+    // Header cells in the sheet wrap onto multiple lines (e.g. "Annual Leave\nAvailable") for
+    // readability there; normalise to single spaces here so every lookup below can just match
+    // plain "Annual Leave Available" without needing to know or care about the real formatting.
+    const normalizedHeader = (bal[0]||[]).map(h => typeof h === 'string' ? h.replace(/\s+/g, ' ').trim() : h);
+    DATA.balances = { header: normalizedHeader, rows: bal.slice(1).filter(r=>r[0]) };
 
     // Approvers only lists a name (it must match an Employees name exactly \u2014 no email
     // stored there anymore), so admin status is: find my employee record from my signed-in
@@ -611,12 +628,12 @@ function renderAll(){
 /* =====================================================================
    UI: small helpers
    ===================================================================== */
-function showToast(msg, isError=false, ok=false){
+function showToast(msg, isError=false, ok=false, durationMs=3200){
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.className = 'show' + (isError?' error':'') + (ok?' ok':'');
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(()=>{ t.className=''; }, 3200);
+  showToast._t = setTimeout(()=>{ t.className=''; }, durationMs);
 }
 function fmtDate(iso){
   // Expects a clean "yyyy-mm-dd" string (which is what serialToISO() now guarantees
@@ -678,30 +695,44 @@ function findBalanceCols(type){
   const ytdIdx = header.findIndex(h => h === type + ' Taken (YTD)');
   return { availIdx, pendIdx, ytdIdx };
 }
-function updateBalanceBox(){
-  const box = document.getElementById('balanceBox');
-  const employee = document.getElementById('reqEmployee').value;
-  const type = document.getElementById('reqType').value;
-  if (!employee || !type){ box.style.display = 'none'; return; }
+function buildBalanceMessage(employee, type){
+  if (!employee || !type) return null;
   const row = DATA.balances.rows.find(r => r[0] === employee);
-  if (!row){ box.style.display = 'none'; return; }
+  if (!row) return `Balance info isn't available yet for ${employee} \u2014 try hitting Sync, or check `
+                  + `they're listed correctly on the Config tab.`;
   const { availIdx, pendIdx, ytdIdx } = findBalanceCols(type);
   if (availIdx > -1){
     const avail = Number(row[availIdx]) || 0;
     const pend = pendIdx > -1 ? (Number(row[pendIdx]) || 0) : 0;
     const net = Math.round((avail - pend) * 10) / 10;
-    box.innerHTML = `<b>${employee}'s ${type} balance:</b> ${avail} days available`
-      + (pend > 0 ? `, ${pend} already pending in other requests \u2014 <b>${net} effectively available</b>.` : '.');
-  } else if (ytdIdx > -1){
-    const ytd = Number(row[ytdIdx]) || 0;
-    box.innerHTML = `<b>${type}</b> isn't tracked as a running balance \u2014 ${employee} has used `
-      + `${ytd} day(s) so far this calendar year.`;
-  } else {
-    box.style.display = 'none'; return;
+    return `${employee}'s ${type} balance: ${avail} days available`
+      + (pend > 0 ? `, ${pend} already pending in other requests \u2014 ${net} effectively available.` : '.');
   }
+  if (ytdIdx > -1){
+    const ytd = Number(row[ytdIdx]) || 0;
+    return `${type} isn't tracked as a running balance \u2014 ${employee} has used ${ytd} day(s) `
+         + `so far this calendar year.`;
+  }
+  return null;
+}
+function updateBalanceBox(){
+  const box = document.getElementById('balanceBox');
+  const employee = document.getElementById('reqEmployee').value;
+  const type = document.getElementById('reqType').value;
+  const msg = buildBalanceMessage(employee, type);
+  if (!msg){ box.style.display = 'none'; return; }
+  box.innerHTML = msg.replace(/^([^:]+:)/, '<b>$1</b>'); // bold the leading "who/what" label, if present
   box.style.display = 'block';
 }
-document.getElementById('reqType').addEventListener('change', updateBalanceBox);
+document.getElementById('reqType').addEventListener('change', ()=>{
+  updateBalanceBox();
+  // A visible "pop" moment as well as the persistent box above, since a quiet inline box
+  // alone is easy to miss.
+  const employee = document.getElementById('reqEmployee').value;
+  const type = document.getElementById('reqType').value;
+  const msg = buildBalanceMessage(employee, type);
+  if (msg) showToast(msg, false, true, 6000);
+});
 
 /* =====================================================================
    VIEW: Submit request

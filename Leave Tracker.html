@@ -291,10 +291,16 @@
 
     <section class="view" id="view-balances">
       <h2 class="view-title">Leave balances</h2>
-      <p class="view-sub">Available and projected balance per leave category. Everyone can see everyone's.</p>
-      <div class="field bal-emp-select">
-        <label for="balEmployee">Employee</label>
-        <select id="balEmployee"></select>
+      <p class="view-sub">Available balance per leave category, in business hours (1 day = 7.6 hours). Admins can view anyone's; everyone else sees their own.</p>
+      <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end;">
+        <div class="field bal-emp-select" style="margin:0;">
+          <label for="balEmployee">Employee</label>
+          <select id="balEmployee"></select>
+        </div>
+        <div class="field" style="margin:0;">
+          <label for="balProjectDate">Project to a future date (optional)</label>
+          <input type="date" id="balProjectDate" style="max-width:170px;">
+        </div>
       </div>
       <div id="balancesHost"><div class="loading">Loading…</div></div>
     </section>
@@ -784,8 +790,18 @@ function populateEmployeeSelects(){
   const hint = document.getElementById('reqEmployeeHint');
   const submitBtn = document.getElementById('submitReqBtn');
 
-  balSel.innerHTML = opts;
-  if (myEmployeeName) balSel.value = myEmployeeName;
+  // Only Admins can browse everyone's balance \u2014 everyone else only ever sees their own.
+  if (isAdmin){
+    balSel.innerHTML = opts;
+    balSel.disabled = false;
+    if (myEmployeeName) balSel.value = myEmployeeName;
+  } else if (myEmployeeName){
+    balSel.innerHTML = `<option value="${myEmployeeName}">${myEmployeeName}</option>`;
+    balSel.disabled = true;
+  } else {
+    balSel.innerHTML = '<option value="">\u2014 not linked to an employee record \u2014</option>';
+    balSel.disabled = true;
+  }
 
   if (isAdmin){
     // Admins can submit on behalf of anyone \u2014 e.g. logging leave for someone who
@@ -841,15 +857,15 @@ function buildBalanceMessage(employee, type, targetDateISO){
       projectedNum = projectBalance(employee, type, targetDateISO);
       whenLabel = `projected balance by ${fmtDate(targetDateISO)}`;
     }
-    const avail = fmtBalanceNum(projectedNum);
-    const pend = fmtBalanceNum(pendNum);
-    const net = fmtBalanceNum(projectedNum - pendNum);
-    return `${employee}'s ${type} ${whenLabel}: ${avail} days available`
-      + (pendNum > 0 ? `, ${pend} already pending in other requests \u2014 ${net} effectively available.` : '.');
+    const avail = fmtHours(projectedNum);
+    const pend = fmtHours(pendNum);
+    const net = fmtHours(projectedNum - pendNum);
+    return `${employee}'s ${type} ${whenLabel}: ${avail} hours available`
+      + (pendNum > 0 ? `, ${pend} hours already pending in other requests \u2014 ${net} hours effectively available.` : '.');
   }
   if (ytdIdx > -1){
-    const ytd = fmtBalanceNum(Number(row[ytdIdx]) || 0);
-    return `${type} isn't tracked as a running balance \u2014 ${employee} has used ${ytd} day(s) `
+    const ytd = fmtHours(Number(row[ytdIdx]) || 0);
+    return `${type} isn't tracked as a running balance \u2014 ${employee} has used ${ytd} hour(s) `
          + `so far this calendar year.`;
   }
   return null;
@@ -1119,7 +1135,10 @@ function renderTimeline(){
    ===================================================================== */
 function renderBalances(){
   const host = document.getElementById('balancesHost');
-  const name = document.getElementById('balEmployee').value || myEmployeeName;
+  // Defense in depth: never trust the dropdown's raw value for a non-admin, even if it were
+  // tampered with directly \u2014 they only ever get their own balance.
+  const name = isAdmin ? (document.getElementById('balEmployee').value || myEmployeeName) : myEmployeeName;
+  const projectDate = document.getElementById('balProjectDate').value; // '' if not set
   const header = DATA.balances.header;
   const row = DATA.balances.rows.find(r=>r[0]===name);
   if (!row){ host.innerHTML = '<div class="empty">No balance data for this employee yet.</div>'; return; }
@@ -1129,25 +1148,34 @@ function renderBalances(){
   header.forEach((h,i)=>{
     if (typeof h === 'string' && h.endsWith('Available')){
       const label = h.replace(/\s*Available$/,'').trim();
-      const projIdx = header.findIndex(h2=> h2===label+' Projected');
-      tiles.push({ label, avail: fmtBalanceNum(row[i]), proj: projIdx>-1 ? fmtBalanceNum(row[projIdx]) : null });
+      let projectedDays = null;
+      if (projectDate){
+        // A real chosen date: project forward using that leave type's own accrual rate,
+        // rather than the sheet's fixed 6-month-out assumption.
+        const p = projectBalance(name, label, projectDate);
+        if (p !== null) projectedDays = p;
+      }
+      tiles.push({ label, availDays: Number(row[i])||0, projectedDays });
     }
   });
   header.forEach((h,i)=>{
     if (typeof h === 'string' && h.endsWith('Taken (YTD)')){
-      tiles.push({ label: h.replace(/\s*Taken \(YTD\)$/,'').trim(), avail: null, ytd: fmtBalanceNum(row[i]) });
+      tiles.push({ label: h.replace(/\s*Taken \(YTD\)$/,'').trim(), availDays: null, ytdDays: Number(row[i])||0 });
     }
   });
 
   host.innerHTML = `<div class="bal-grid">` + tiles.map(t=>`
     <div class="bal-tile">
       <div class="lt">${t.label}</div>
-      ${t.avail!==null
-        ? `<div class="avail">${t.avail} days</div><div class="proj">Projected: ${t.proj ?? '\u2014'} days</div>`
-        : `<div class="avail">${t.ytd} days</div><div class="proj">Taken this year</div>`}
+      ${t.availDays!==null
+        ? `<div class="avail">${fmtHours(t.availDays)} hours</div><div class="proj">${
+            projectDate ? `Projected by ${fmtDate(projectDate)}: ${fmtHours(t.projectedDays)} hours` : 'As of today \u2014 pick a date above to project forward'
+          }</div>`
+        : `<div class="avail">${fmtHours(t.ytdDays)} hours</div><div class="proj">Taken this year</div>`}
     </div>`).join('') + `</div>`;
 }
 document.getElementById('balEmployee').addEventListener('change', renderBalances);
+document.getElementById('balProjectDate').addEventListener('change', renderBalances);
 
 /* =====================================================================
    VIEW: Admin
@@ -1232,6 +1260,11 @@ function colIndexToLetter(idx){
 function fmtBalanceNum(n){
   const v = Number(n);
   return (isNaN(v) ? 0 : v).toFixed(2);
+}
+const DAYS_TO_HOURS = 7.6; // standard AU 38-hour week / 5 days
+function fmtHours(days){
+  const v = Number(days);
+  return ((isNaN(v) ? 0 : v) * DAYS_TO_HOURS).toFixed(2);
 }
 function getCurrentBalanceTypes(){
   return DATA.balances.header

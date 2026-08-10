@@ -291,7 +291,7 @@
 
     <section class="view" id="view-balances">
       <h2 class="view-title">Leave balances</h2>
-      <p class="view-sub">Available balance per leave category, in business hours (1 day = 7.6 hours). Admins can view anyone's; everyone else sees their own.</p>
+      <p class="view-sub">Balance per leave category, as of today or a future date if you pick one below (1 day = 7.6 hours). Admins can view anyone's; everyone else sees their own.</p>
       <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end;">
         <div class="field bal-emp-select" style="margin:0;">
           <label for="balEmployee">Employee</label>
@@ -1148,30 +1148,28 @@ function renderBalances(){
   header.forEach((h,i)=>{
     if (typeof h === 'string' && h.endsWith('Available')){
       const label = h.replace(/\s*Available$/,'').trim();
-      let projectedDays = null;
+      // The single figure this tile shows: today's balance by default, or \u2014 once a date is
+      // picked \u2014 that same figure projected forward to it. Nothing separate to compare against;
+      // picking a date changes what "the balance" means for this tile, it doesn't add a second one.
+      let days = Number(row[i]) || 0;
       if (projectDate){
-        // A real chosen date: project forward using that leave type's own accrual rate,
-        // rather than the sheet's fixed 6-month-out assumption.
         const p = projectBalance(name, label, projectDate);
-        if (p !== null) projectedDays = p;
+        if (p !== null) days = p;
       }
-      tiles.push({ label, availDays: Number(row[i])||0, projectedDays });
+      tiles.push({ label, days, isYTD: false });
     }
   });
   header.forEach((h,i)=>{
     if (typeof h === 'string' && h.endsWith('Taken (YTD)')){
-      tiles.push({ label: h.replace(/\s*Taken \(YTD\)$/,'').trim(), availDays: null, ytdDays: Number(row[i])||0 });
+      tiles.push({ label: h.replace(/\s*Taken \(YTD\)$/,'').trim(), days: Number(row[i])||0, isYTD: true });
     }
   });
 
   host.innerHTML = `<div class="bal-grid">` + tiles.map(t=>`
     <div class="bal-tile">
       <div class="lt">${t.label}</div>
-      ${t.availDays!==null
-        ? `<div class="avail">${fmtHours(t.availDays)} hours</div><div class="proj">${
-            projectDate ? `Projected by ${fmtDate(projectDate)}: ${fmtHours(t.projectedDays)} hours` : 'As of today \u2014 pick a date above to project forward'
-          }</div>`
-        : `<div class="avail">${fmtHours(t.ytdDays)} hours</div><div class="proj">Taken this year</div>`}
+      <div class="avail">${fmtBalanceNum(t.days)} days</div>
+      <div class="proj">${Math.round(t.days * DAYS_TO_HOURS)} hours${t.isYTD ? ' \u2014 taken this year' : ''}</div>
     </div>`).join('') + `</div>`;
 }
 document.getElementById('balEmployee').addEventListener('change', renderBalances);
